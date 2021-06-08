@@ -24,6 +24,7 @@ namespace ByteBank.View
 	{
 		private readonly ContaClienteRepository r_Repositorio;
 		private readonly ContaClienteService r_Servico;
+		private CancellationTokenSource _cts;
 
 		public MainWindow()
 		{
@@ -35,8 +36,12 @@ namespace ByteBank.View
 
 		private async void BtnProcessar_Click(object sender, RoutedEventArgs e)
 		{
+			_cts = new CancellationTokenSource();
+
 			var contas = r_Repositorio.GetContaClientes();
 			PgsProgresso.Maximum = contas.Count();
+			BtnCancelar.IsEnabled = true;
+
 
 			//Reativação do botão dentro do metodo ResolvendoComTasks
 			BtnProcessar.IsEnabled = false;
@@ -45,6 +50,12 @@ namespace ByteBank.View
 			//ResolucaoComTasksMelhorado(contas);
 			ResolucaoComAsyncAwait(contas);
 
+		}
+
+		private void BtnCancelar_Click(object sender, RoutedEventArgs e)
+		{
+			BtnCancelar.IsEnabled = false;
+			_cts.Cancel();
 		}
 
 		private void AtualizarView(List<String> result, TimeSpan elapsedTime)
@@ -83,13 +94,23 @@ namespace ByteBank.View
 
 			//implementação manual do item acima
 			//var byteBankProgress = new ByteBankProgress<String>(str =>
-				//PgsProgresso.Value++);
+			//PgsProgresso.Value++);
 
-			var resultado = await ConsolidarContasMelhorado(contas, progress);
-
-			var fim = DateTime.Now;
-			AtualizarView(resultado, fim - inicio);
-			BtnProcessar.IsEnabled = true;
+			try
+			{
+				var resultado = await ConsolidarContasMelhorado(contas, progress, _cts.Token);
+				var fim = DateTime.Now;
+				AtualizarView(resultado, fim - inicio);
+			}
+			catch (OperationCanceledException)
+			{
+				TxtTempo.Text = "Operação Cancelada Pelo Usuário";
+			}
+			finally
+			{
+				BtnProcessar.IsEnabled = true;
+				BtnCancelar.IsEnabled = false;
+			}			
 		}
 
 		private void ResolucaoComTasksMelhorado(IEnumerable<ContaCliente> contas)
@@ -111,18 +132,20 @@ namespace ByteBank.View
 					}, taskSchedulerUI); //diz para essa tarefa rodar no Scheduler da interface grafica
 		}
 
-		private async Task<string[]> ConsolidarContasMelhorado(IEnumerable<ContaCliente> contas, IProgress<string> reportadorDeProgresso)
+		private async Task<string[]> ConsolidarContasMelhorado(IEnumerable<ContaCliente> contas, IProgress<string> reportadorDeProgresso, CancellationToken ct)
 		{
 			//TaskScheduler da interface grafica
 			//var tskScheduler = TaskScheduler.FromCurrentSynchronizationContext();
 			var tasks = contas.Select(conta =>
 				Task.Factory.StartNew(() =>
 				{
-					var resultadoConsolidacao = r_Servico.ConsolidarMovimentacao(conta);
+					ct.ThrowIfCancellationRequested();
+
+					var resultadoConsolidacao = r_Servico.ConsolidarMovimentacao(conta, ct);
 
 					//Substitui a task Abaixo
 					reportadorDeProgresso.Report(resultadoConsolidacao);
-					
+
 					//Task reponsavel por atualizar a barra de progresso
 					/*
 						Task.Factory.StartNew(() =>
@@ -132,8 +155,10 @@ namespace ByteBank.View
 						tskScheduler
 					);
 					*/
+					ct.ThrowIfCancellationRequested();
+
 					return resultadoConsolidacao;
-				})
+				},ct)
 			);
 
 			return await Task.WhenAll(tasks);
@@ -253,5 +278,6 @@ namespace ByteBank.View
 			var fim = DateTime.Now;
 			AtualizarView(resultado, fim - inicio);
 		}
+
 	}
 }
